@@ -1,0 +1,127 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: SAM template for Lambda VPC Lookup (least-privilege role, optional bucket creation)
+
+Parameters:
+  SnapshotBucket:
+    Type: String
+    Description: Name of the S3 bucket to store snapshots (must exist unless CreateSnapshotBucket is true)
+  CreateSnapshotBucket:
+    Type: String
+    AllowedValues: [ 'true', 'false' ]
+    Default: 'false'
+    Description: If true, CloudFormation will create the bucket named by SnapshotBucket
+  SNSTopicArn:
+    Type: String
+    Default: ''
+    Description: Optional SNS Topic ARN to notify on failures
+  AssumeRoleNamePrefix:
+    Type: String
+    Default: "vpc-lookup-"
+    Description: Role name prefix pattern for roles this function is allowed to assume (scopes sts:AssumeRole to arn:aws:iam::*:role/${AssumeRoleNamePrefix}*)
+
+Conditions:
+  CreateBucketCondition: !Equals [ !Ref CreateSnapshotBucket, 'true' ]
+
+Globals:
+  Function:
+    Runtime: python3.9
+    Timeout: 60
+    MemorySize: 128
+
+Resources:
+  SnapshotBucketResource:
+    Type: AWS::S3::Bucket
+    Condition: CreateBucketCondition
+    Properties:
+      BucketName: !Ref SnapshotBucket
+      LifecycleConfiguration:
+        Rules:
+          - Id: snapshot-retention
+            Status: Enabled
+            Prefix: snapshots/
+            ExpirationInDays: 90
+      # Optionally add default encryption here in production
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: VpcLookupPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeVpcs
+                  - ec2:DescribeSubnets
+                  - ec2:DescribeRouteTables
+                  - ec2:DescribeSecurityGroups
+                  - ec2:DescribeNetworkInterfaces
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:PutObjectAcl
+                Resource:
+                  - !Sub arn:aws:s3:::${SnapshotBucket}/*
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "arn:aws:logs:*:*:*"
+              - Effect: Allow
+                Action:
+                  - sts:AssumeRole
+                Resource:
+                  - !Sub arn:aws:iam::*:role/${AssumeRoleNamePrefix}*
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource:
+                  - !If [CreateBucketCondition, !Ref SNSTopicArn, !Ref SNSTopicArn]
+
+  VpcLookupFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: lambda_function.handler
+      CodeUri: ../src
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          SNAPSHOT_BUCKET: !Ref SnapshotBucket
+          SNS_TOPIC_ARN: !Ref SNSTopicArn
+          METRIC_NAMESPACE: LambdaVPCLookup
+      Events:
+        ScheduledSnapshot:
+          Type: Schedule
+          Properties:
+            Schedule: rate(24 hours)
+            Name: daily-vpc-snapshot
+            Description: Daily VPC snapshot
+
+Outputs:
+  FunctionName:
+    Value: !Ref VpcLookupFunction
+    Description: Lambda function logical id
+  LambdaRoleArn:
+    Value: !GetAtt LambdaExecutionRole.Arn
+    Description: IAM role ARN used by the Lambda
+  SnapshotBucketName:
+    Value: !Ref SnapshotBucket
+    Description: The snapshot bucket (created if CreateSnapshotBucket=true)
