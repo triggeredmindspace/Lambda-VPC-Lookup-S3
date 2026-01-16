@@ -146,5 +146,3 @@ Open a PR with clear motivation, tests for new logic, and any infra changes spli
 Specify your project's license here (e.g. MIT, Apache-2.0).
 
 ---
-
-If you'd like, I can scaffold a minimal Lambda function (handler + tests) and a small CloudFormation/SAM template in this repo next. Tell me which language and IaC flavor you'd prefer and I'll implement it and run quick unit tests locally.
